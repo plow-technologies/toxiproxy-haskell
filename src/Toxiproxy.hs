@@ -26,14 +26,13 @@ module Toxiproxy
     , ProxyName(..)
     , ToxicName(..)
     , Host
-    , toxiproxyUrl
     , withDisabled
     , withToxic
     , withProxy
     , run
     ) where
 
-import Servant.API
+import Servant.API hiding (Stream)
 import Servant.Client
 import qualified Data.Proxy as Proxy
 import Data.Text (Text, pack, toLower, unpack)
@@ -243,21 +242,14 @@ deleteToxic  :: ProxyName -> ToxicName -> ClientM NoContent
             :<|> updateProxy :<|> deleteProxy :<|> getToxics :<|> createToxic :<|> getToxic
             :<|> updateToxic :<|> deleteToxic) = client toxiproxyAPI
 
--- | The default Toxiproxy service URL.
---   (127.0.0.1:8474)
-toxiproxyUrl :: BaseUrl
-toxiproxyUrl = BaseUrl Http "127.0.0.1" 8474 ""
-
 -- | A helper for easily querying the Toxiproxy API. Assumes Toxiproxy is running on
 --  'toxiproxyUrl'.
 --
 -- @
 -- proxies <- run getProxies
 -- @
-run :: ClientM a -> IO (Either ServantError a)
-run f = do
-  manager <- newManager defaultManagerSettings
-  runClientM f (ClientEnv manager toxiproxyUrl)
+run :: ClientEnv -> ClientM a -> IO (Either ClientError a)
+run env f = runClientM f env
 
 -- | Given an enabled proxy, disable the proxy, run the given action and then re-enable
 --   the proxy.
@@ -270,12 +262,12 @@ run f = do
 --   connectToMyProxy     -- This will get rejected.
 -- connectToMyProxy       -- This will connect again.
 -- @
-withDisabled :: Proxy -> IO a -> IO a
-withDisabled proxy f =
+withDisabled :: ClientEnv -> Proxy -> IO a -> IO a
+withDisabled env proxy f =
   bracket disable enable $ const f
   where
-    enable        = const . run $ updateProxy (proxyName proxy) proxy
-    disable       = void . run $ updateProxy (proxyName proxy) disabledProxy
+    enable        = const . run env $ updateProxy (proxyName proxy) proxy
+    disable       = void . run env $ updateProxy (proxyName proxy) disabledProxy
     disabledProxy = proxy { proxyEnabled = False }
 
 -- | Given a proxy and a toxic, create the toxic on the proxy, run the given action and
@@ -287,21 +279,21 @@ withDisabled proxy f =
 -- withToxic myProxy latencyToxic $
 --   sendRequestThroughProxy -- This request will have latency applied to it.
 -- @
-withToxic :: Proxy -> Toxic -> IO a -> IO a
-withToxic proxy toxic f =
+withToxic :: ClientEnv -> Proxy -> Toxic -> IO a -> IO a
+withToxic env proxy toxic f =
   bracket enable disable $ const f
   where
-    enable = void . run $ createToxic (proxyName proxy) toxic
-    disable = const . run $ deleteToxic (proxyName proxy) (toxicName toxic)
+    enable = void . run env $ createToxic (proxyName proxy) toxic
+    disable = const . run env $ deleteToxic (proxyName proxy) (toxicName toxic)
 
 -- | Given a proxy record, create the proxy on the server, run the given action and then
 --   delete the proxy off the server.
 --
 --   This is useful for wrapping 'withDisabled' and 'withToxic' calls. It enures that your
 --   test cleans up the Toxiproxy server so that proxies don't leak into your other tests.
-withProxy :: Proxy -> (Proxy -> IO a) -> IO a
-withProxy proxy =
+withProxy :: ClientEnv -> Proxy -> (Proxy -> IO a) -> IO a
+withProxy env proxy =
   bracket create delete
   where
-    create = run (createProxy proxy) >> return proxy
-    delete = const . run $ deleteProxy (proxyName proxy)
+    create = run env (createProxy proxy) >> return proxy
+    delete = const . run env $ deleteProxy (proxyName proxy)
